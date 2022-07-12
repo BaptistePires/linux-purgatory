@@ -2,6 +2,7 @@
 /*
  * Scheduler internal types and methods:
  */
+#include "linux/cache.h"
 #include <linux/sched.h>
 
 #include <linux/sched/autogroup.h>
@@ -154,6 +155,11 @@ extern void call_trace_sched_update_nr_running(struct rq *rq, int count);
  */
 #define DL_SCALE		10
 
+/*
+ * The maximium spent time in the purgatory (ns).
+ * TODO: set it as a param and procfs
+ */
+#define PURGATORY_DURATION 100000
 /*
  * Single value that denotes runtime == period, ie unlimited time.
  */
@@ -574,7 +580,11 @@ struct cfs_rq {
 		unsigned long	runnable_avg;
 	} removed;
 
-	struct list_head purgatory;
+	struct {
+		raw_spinlock_t lock ____cacheline_aligned;
+		struct list_head tasks;
+		unsigned long nr;
+	} purgatory;
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
 	unsigned long		tg_load_avg_contrib;
@@ -624,6 +634,37 @@ struct cfs_rq {
 #endif /* CONFIG_CFS_BANDWIDTH */
 #endif /* CONFIG_FAIR_GROUP_SCHED */
 };
+
+// #include "pelt.h"
+
+// static void fclear_pugatory(struct cfs_rq *rq) {
+// 	struct task_struct *pos;
+// 	u64 now = cfs_rq_clock_pelt(rq);
+// 	if (!rq->purgatory.nr)
+// 		return;
+	
+// 	list_for_each_entry(pos, &rq->purgatory.tasks, purgatory) {
+// 		if (now - pos->sleep_timestamp < PURGATORY_DURATION)
+// 			break;
+// 		update_load_avg(rq, &pos->se, UPDATE_TG);
+// 	}
+
+// }
+// #define clear_purgatory(cfs_rq) \
+// 	 do { 																	\
+// 		struct task_struct *pos; 											\
+// 		u64 __now = cfs_rq_clock_pelt((cfs_rq)); 								\
+// 		if (!(cfs_rq)->purgatory.nr)											\
+// 			break;															\
+// 		list_for_each_entry(pos, &cfs_rq->purgatory.tasks, purgatory) {  	\
+// 			if (__now - pos->sleep_timestamp < PURGATORY_DURATION) 	   		\
+// 				break; 														\
+// 			update_load_avg((cfs_rq), &pos->se, UPDATE_TG); 										\
+// 		} 																	\
+// 		if (cfs_rq->purgatory.tasks != pos) { 								\
+// 			update_cfs_rq_load_avg(__now, (cfs_rq));							\
+// 		}																	\
+// 	} while(0); 															
 
 static inline int rt_bandwidth_enabled(void)
 {
