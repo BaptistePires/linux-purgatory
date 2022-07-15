@@ -4456,8 +4456,6 @@ dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 	 */
 	if (!(flags & DEQUEUE_SLEEP)) {
 		se->vruntime -= cfs_rq->min_vruntime;
-	}
-
 #ifdef CONFIG_SMP
 		// We register the time that we blocked/slept
 		task_of(se)->sleep_timestamp = cfs_rq_clock_pelt(cfs_rq);
@@ -4467,6 +4465,7 @@ dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 		pr_info("added\n");
 		raw_spin_unlock(&cfs_rq->purgatory.lock);
 #endif	
+	}
 
 	/* return excess runtime on last dequeue */
 	return_cfs_rq_runtime(cfs_rq);
@@ -9215,8 +9214,8 @@ static inline void update_sd_lb_stats(struct lb_env *env, struct sd_lb_stats *sd
 	struct sg_lb_stats tmp_sgs;
 	int sg_status = 0;
 
-	clear_pugatory(&env->dst_rq->cfs);
-	clear_pugatory(&env->src_rq->cfs);
+	// clear_pugatory(&env->dst_rq->cfs);
+	// clear_pugatory(&env->src_rq->cfs);
 
 	do {
 		struct sg_lb_stats *sgs = &tmp_sgs;
