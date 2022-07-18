@@ -20,6 +20,8 @@
  *  Adaptive scheduling granularity, math enhancements by Peter Zijlstra
  *  Copyright (C) 2007 Red Hat, Inc., Peter Zijlstra
  */
+#include "linux/list.h"
+#include "linux/printk.h"
 #include "linux/sched.h"
 #include "sched.h"
 
@@ -3839,7 +3841,7 @@ static void detach_entity_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *s
 #define SKIP_AGE_LOAD	0x2
 #define DO_ATTACH	0x4
 
-static void clear_pugatory(struct cfs_rq *rq);
+static void clear_purgatory(struct cfs_rq *rq);
 
 /* Update task and its cfs_rq load average */
 static inline void update_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
@@ -3878,30 +3880,39 @@ static inline void update_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *s
 }
 
 
-static void clear_pugatory(struct cfs_rq *rq) {
-	struct task_struct *pos;
+static void clear_purgatory(struct cfs_rq *cfs_rq) {
+	struct task_struct *pos, *tmp;
 	u64 out = 0;
 	u64 now;
 	
-	if (!rq) return;
-	pr_info("count pur : %llu\n", rq->purgatory.nr);
-	now = cfs_rq_clock_pelt(rq);
-	if (!rq->purgatory.nr)
-		return;
-	
-	list_for_each_entry(pos, &rq->purgatory.tasks, purgatory) {
-		if (now - pos->sleep_timestamp < PURGATORY_DURATION)
+	if (!cfs_rq || !cfs_rq->purgatory.nr) return;
+
+	now = cfs_rq_clock_pelt(cfs_rq);
+	raw_spin_lock(&cfs_rq->purgatory.lock);
+	list_for_each_entry_safe(pos, tmp, &cfs_rq->purgatory.tasks, purgatory) {
+		if (now - pos->sleep_timestamp < PURGATORY_DURATION) {
+			pr_info("cann't leave purgatory rn\n");
 			break;
+		}
 		// update_load_avg(rq, &pos->se, UPDATE_TG);
-		update_cfs_rq_load_avg(now,rq);
+		// This doesn't do shit ://
+		update_cfs_rq_load_avg(now, cfs_rq);
+		list_del(&pos->purgatory);
 		out++;
 	}
-	
+	cfs_rq->purgatory.nr -= out;
+	raw_spin_unlock(&cfs_rq->purgatory.lock);
 	if(out) {
-		rq->purgatory.nr -= out;
-		rq->purgatory.tasks = pos->purgatory;
+		// At this point we have been through the whole list, no more thread in purgatory
+		// if (&cfs_rq->purgatory.tasks == &pos->purgatory) {
+			
+		// } else {
+		// 	list_move(&pos->purgatory, &cfs_rq->purgatory.tasks);
+		// }
+		pr_info("[purgatory] Removed %llu\n", out);
+		
 	}
-	pr_info("hello\n");
+	
 }
 
 #ifndef CONFIG_64BIT
@@ -4338,6 +4349,7 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 	 *     its group cfs_rq
 	 *   - Add its new weight to cfs_rq->load.weight
 	 */
+	clear_purgatory(cfs_rq);
 	update_load_avg(cfs_rq, se, UPDATE_TG | DO_ATTACH);
 	se_update_runnable(se);
 	update_cfs_group(se);
@@ -4428,7 +4440,18 @@ dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 	 *   - For group entity, update its weight to reflect the new share
 	 *     of its group cfs_rq.
 	 */
-	// update_load_avg(cfs_rq, se, UPDATE_TG);
+	if (!(flags & DEQUEUE_SLEEP)) {
+		update_load_avg(cfs_rq, se, UPDATE_TG);
+	} else {
+		if (entity_is_task(se)) {
+			// We register the time that we blocked/slept
+			task_of(se)->sleep_timestamp = cfs_rq_clock_pelt(cfs_rq);
+			raw_spin_lock(&cfs_rq->purgatory.lock);
+			list_add_tail(&task_of(se)->purgatory, &cfs_rq->purgatory.tasks);
+			cfs_rq->purgatory.nr++;
+			raw_spin_unlock(&cfs_rq->purgatory.lock);
+		}
+	}
 
 	// Only does something if the sched_entity @se is not a task.
 	se_update_runnable(se);
@@ -4456,15 +4479,6 @@ dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 	 */
 	if (!(flags & DEQUEUE_SLEEP)) {
 		se->vruntime -= cfs_rq->min_vruntime;
-#ifdef CONFIG_SMP
-		// We register the time that we blocked/slept
-		task_of(se)->sleep_timestamp = cfs_rq_clock_pelt(cfs_rq);
-		raw_spin_lock(&cfs_rq->purgatory.lock);
-		list_add_tail(&task_of(se)->purgatory, &cfs_rq->purgatory.tasks);
-		cfs_rq->purgatory.nr++;
-		pr_info("added\n");
-		raw_spin_unlock(&cfs_rq->purgatory.lock);
-#endif	
 	}
 
 	/* return excess runtime on last dequeue */

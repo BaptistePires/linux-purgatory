@@ -159,7 +159,7 @@ extern void call_trace_sched_update_nr_running(struct rq *rq, int count);
  * The maximium spent time in the purgatory (ns).
  * TODO: set it as a param and procfs
  */
-#define PURGATORY_DURATION 100000
+#define PURGATORY_DURATION 10000
 /*
  * Single value that denotes runtime == period, ie unlimited time.
  */
