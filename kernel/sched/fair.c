@@ -3000,9 +3000,10 @@ account_entity_enqueue(struct cfs_rq *cfs_rq, struct sched_entity *se)
 }
 
 static void
-account_entity_dequeue(struct cfs_rq *cfs_rq, struct sched_entity *se)
+account_entity_dequeue(struct cfs_rq *cfs_rq, struct sched_entity *se, int sub_load)
 {
-	update_load_sub(&cfs_rq->load, se->load.weight);
+	if (sub_load)
+		update_load_sub(&cfs_rq->load, se->load.weight);
 #ifdef CONFIG_SMP
 	if (entity_is_task(se)) {
 		account_numa_dequeue(rq_of(cfs_rq), task_of(se));
@@ -3841,7 +3842,7 @@ static void detach_entity_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *s
 #define SKIP_AGE_LOAD	0x2
 #define DO_ATTACH	0x4
 
-static void clear_purgatory(struct cfs_rq *rq);
+static int clear_purgatory(struct cfs_rq *rq, struct task_struct *task);
 
 /* Update task and its cfs_rq load average */
 static inline void update_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
@@ -3879,40 +3880,44 @@ static inline void update_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *s
 	}
 }
 
-
-static void clear_purgatory(struct cfs_rq *cfs_rq) {
+static void remove_entity_load_avg(struct sched_entity *se);
+/**
+ * @cfs_rq : struct cfs_rq which whose purgatory might need to be cleaned
+ * @task   : struct task_struct
+ * return  : 1 if @task was removed from the rq
+ *			 0 otherwise
+ * This functions add the removed tasks from the purgatory to the @cfs_rq->removed field.
+ * You need to call update_load_avg_cfs_rq after this function in order to really remove
+ * load_avg from rq.
+ */
+static int clear_purgatory(struct cfs_rq *cfs_rq, struct task_struct *task) {
 	struct task_struct *pos, *tmp;
-	u64 out = 0;
+	u64 out;
 	u64 now;
-	
-	if (!cfs_rq || !cfs_rq->purgatory.nr) return;
+	int ret = 0;
 
+	if (!cfs_rq || !cfs_rq->purgatory.nr) return ret;
+
+	out = 0;
 	now = cfs_rq_clock_pelt(cfs_rq);
-	raw_spin_lock(&cfs_rq->purgatory.lock);
+	// raw_spin_lock(&cfs_rq->purgatory.lock);
 	list_for_each_entry_safe(pos, tmp, &cfs_rq->purgatory.tasks, purgatory) {
-		if (now - pos->sleep_timestamp < PURGATORY_DURATION) {
-			pr_info("cann't leave purgatory rn\n");
+		if (now - pos->sleep_timestamp < PURGATORY_DURATION)
 			break;
-		}
-		// update_load_avg(rq, &pos->se, UPDATE_TG);
-		// This doesn't do shit ://
-		update_cfs_rq_load_avg(now, cfs_rq);
-		list_del(&pos->purgatory);
+	
+		// this only updates __removed__ cfs_rq field
+		remove_entity_load_avg(&pos->se);
+		// removes weight from the rq
+		account_entity_dequeue(cfs_rq, &pos->se, 1);
 		out++;
+		pr_info("[purgatory] Removed task : %s\n", pos->comm);
+		if (pos == task) ret = 1;
 	}
 	cfs_rq->purgatory.nr -= out;
-	raw_spin_unlock(&cfs_rq->purgatory.lock);
-	if(out) {
-		// At this point we have been through the whole list, no more thread in purgatory
-		// if (&cfs_rq->purgatory.tasks == &pos->purgatory) {
-			
-		// } else {
-		// 	list_move(&pos->purgatory, &cfs_rq->purgatory.tasks);
-		// }
-		pr_info("[purgatory] Removed %llu\n", out);
-		
-	}
-	
+	list_move(&pos->purgatory, &cfs_rq->purgatory.tasks);
+	// raw_spin_unlock(&cfs_rq->purgatory.lock);
+
+	return ret;
 }
 
 #ifndef CONFIG_64BIT
@@ -4322,7 +4327,9 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 {
 	bool renorm = !(flags & ENQUEUE_WAKEUP) || (flags & ENQUEUE_MIGRATED);
 	bool curr = cfs_rq->curr == se;
+	clear_purgatory(cfs_rq, task_of(se));
 
+	pr_info("enter enqeuue\n");
 	/*
 	 * If we're the current task, we must renormalise before calling
 	 * update_curr().
@@ -4349,7 +4356,6 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 	 *     its group cfs_rq
 	 *   - Add its new weight to cfs_rq->load.weight
 	 */
-	clear_purgatory(cfs_rq);
 	update_load_avg(cfs_rq, se, UPDATE_TG | DO_ATTACH);
 	se_update_runnable(se);
 	update_cfs_group(se);
@@ -4375,6 +4381,8 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 
 	if (cfs_rq->nr_running == 1)
 		check_enqueue_throttle(cfs_rq);
+
+	pr_info("leave enqueue\n");
 }
 
 static void __clear_buddies_last(struct sched_entity *se)
@@ -4427,6 +4435,7 @@ static __always_inline void return_cfs_rq_runtime(struct cfs_rq *cfs_rq);
 static void
 dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 {
+	pr_info("enter dequeue\n");
 	/*
 	 * Update run-time statistics of the 'current'.
 	 */
@@ -4440,18 +4449,20 @@ dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 	 *   - For group entity, update its weight to reflect the new share
 	 *     of its group cfs_rq.
 	 */
-	if (!(flags & DEQUEUE_SLEEP)) {
-		update_load_avg(cfs_rq, se, UPDATE_TG);
-	} else {
-		if (entity_is_task(se)) {
-			// We register the time that we blocked/slept
-			task_of(se)->sleep_timestamp = cfs_rq_clock_pelt(cfs_rq);
-			raw_spin_lock(&cfs_rq->purgatory.lock);
-			list_add_tail(&task_of(se)->purgatory, &cfs_rq->purgatory.tasks);
-			cfs_rq->purgatory.nr++;
-			raw_spin_unlock(&cfs_rq->purgatory.lock);
-		}
-	}
+	// if (!(flags & DEQUEUE_SLEEP)) {
+		// pr_info("not sleeping ?\n");
+	update_load_avg(cfs_rq, se, UPDATE_TG);
+	// } else {
+	// 	if (entity_is_task(se)) {
+	// 		// We register the time that we blocked/slept
+	// 		task_of(se)->sleep_timestamp = cfs_rq_clock_pelt(cfs_rq);
+	// 		// raw_spin_lock(&cfs_rq->purgatory.lock);
+	// 		list_add_tail(&task_of(se)->purgatory, &cfs_rq->purgatory.tasks);
+	// 		cfs_rq->purgatory.nr++;
+	// 		// raw_spin_unlock(&cfs_rq->purgatory.lock);
+	// 		pr_info("[purgatory] Added task : %s\n", task_of(se)->comm);
+	// 	}
+	// }
 
 	// Only does something if the sched_entity @se is not a task.
 	se_update_runnable(se);
@@ -4469,7 +4480,10 @@ dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 	se->on_rq = 0;
 
 	// nr_running is updated here
-	account_entity_dequeue(cfs_rq, se);
+	// if (!(flags & DEQUEUE_SLEEP))
+	account_entity_dequeue(cfs_rq, se, 0);
+	// Temp fix
+	// update_load_add(&cfs_rq->load, se->load.weight);
 
 	/*
 	 * Normalize after update_curr(); which will also have moved
@@ -4494,6 +4508,7 @@ dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 	 */
 	if ((flags & (DEQUEUE_SAVE | DEQUEUE_MOVE)) != DEQUEUE_SAVE)
 		update_min_vruntime(cfs_rq);
+	pr_info("leave dequeue\n");
 }
 
 /*
