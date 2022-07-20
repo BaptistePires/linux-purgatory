@@ -20,7 +20,9 @@
  *  Adaptive scheduling granularity, math enhancements by Peter Zijlstra
  *  Copyright (C) 2007 Red Hat, Inc., Peter Zijlstra
  */
+#include "linux/list.h"
 #include "sched.h"
+
 
 /*
  * Targeted preemption latency for CPU-bound tasks:
@@ -83,6 +85,33 @@ unsigned int sysctl_sched_wakeup_granularity			= 1000000UL;
 static unsigned int normalized_sysctl_sched_wakeup_granularity	= 1000000UL;
 
 const_debug unsigned int sysctl_sched_migration_cost	= 500000UL;
+
+#define PURGATORY_TIMEOUT 10000
+int clear_purgatory(struct cfs_rq *cfs_rq)
+{
+        u64 now;
+        struct task_struct *ite, *tmp;
+
+        now = ktime_get_ns();
+
+        /*
+         * As tasks are inserted at the tail of @cfs_rq->purgatory.tasks, it ensures
+         * that they are time-ordered (most recent blocked will be at the end) so
+         * whenever we find a task that hasn't timed out of the purgatory, all of
+         * the next ones too. !rephrase!
+         */
+        list_for_each_entry_safe(ite, tmp, &cfs_rq->purgatory.tasks, tasks) {
+                if (now - ite->purgatory.sleep_timestamp < PURGATORY_TIMEOUT)
+                        break;
+
+                ite->purgatory.kicked_out++;
+                ite->purgatory.sleep_timestamp = 0;
+                list_del(&ite->purgatory.tasks);
+		pr_info("[purgatory] Task timeout from purgatory\n");
+        }
+
+        return 0;
+}
 
 int sched_thermal_decay_shift;
 static int __init setup_sched_thermal_decay_shift(char *str)
@@ -4292,7 +4321,7 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 		se->vruntime += cfs_rq->min_vruntime;
 
 	update_curr(cfs_rq);
-
+	clear_purgatory(cfs_rq);
 	/*
 	 * Otherwise, renormalise after, such that we're placed at the current
 	 * moment in time, instead of some random moment in the past. Being
@@ -4392,6 +4421,13 @@ dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 	 */
 	update_curr(cfs_rq);
 
+	if (flags & DEQUEUE_SLEEP) {
+		struct task_struct *dequeued = task_of(se);
+		dequeued->purgatory.sleep_timestamp = cfs_rq_clock_pelt(cfs_rq);
+		dequeued->purgatory.sleep_count++;
+		list_add_tail(&dequeued->purgatory.tasks, &cfs_rq->purgatory.tasks);
+		// pr_info("[purgatory] Added tasks to purgatory\n");
+	}
 	/*
 	 * When dequeuing a sched_entity, we must:
 	 *   - Update loads to have both entity and cfs_rq synced with now.
@@ -11117,6 +11153,10 @@ static void task_fork_fair(struct task_struct *p)
 		update_curr(cfs_rq);
 		se->vruntime = curr->vruntime;
 	}
+	p->purgatory.kicked_out = 0;
+	p->purgatory.sleep_count = 0;
+	p->purgatory.sleep_timestamp = 0;
+	INIT_LIST_HEAD(&p->purgatory.tasks);
 	place_entity(cfs_rq, se, 1);
 
 	if (sysctl_sched_child_runs_first && curr && entity_before(curr, se)) {
@@ -11334,7 +11374,7 @@ void init_cfs_rq(struct cfs_rq *cfs_rq)
 #ifdef CONFIG_SMP
 	raw_spin_lock_init(&cfs_rq->removed.lock);
 #endif
-	INIT_LIST_HEAD(&cfs_rq->purgatory);
+	INIT_LIST_HEAD(&cfs_rq->purgatory.tasks);
 }
 
 #ifdef CONFIG_FAIR_GROUP_SCHED

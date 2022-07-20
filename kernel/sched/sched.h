@@ -574,7 +574,10 @@ struct cfs_rq {
 		unsigned long	runnable_avg;
 	} removed;
 
-	struct list_head purgatory;
+	struct {
+		u64 nr;
+		struct list_head tasks;
+	} purgatory;
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
 	unsigned long		tg_load_avg_contrib;

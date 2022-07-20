@@ -790,6 +790,13 @@ struct task_struct {
 	struct task_group		*sched_task_group;
 #endif
 
+	struct {
+		u64 sleep_timestamp;
+		u64 sleep_count;
+		u64 kicked_out;
+		struct list_head tasks;
+	} purgatory;
+
 #ifdef CONFIG_UCLAMP_TASK
 	/*
 	 * Clamp values requested for a scheduling entity.
