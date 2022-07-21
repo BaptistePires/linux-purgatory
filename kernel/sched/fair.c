@@ -86,33 +86,6 @@ static unsigned int normalized_sysctl_sched_wakeup_granularity	= 1000000UL;
 
 const_debug unsigned int sysctl_sched_migration_cost	= 500000UL;
 
-#define PURGATORY_TIMEOUT 10000
-int clear_purgatory(struct cfs_rq *cfs_rq)
-{
-        u64 now;
-        struct task_struct *ite, *tmp;
-
-        now = ktime_get_ns();
-
-        /*
-         * As tasks are inserted at the tail of @cfs_rq->purgatory.tasks, it ensures
-         * that they are time-ordered (most recent blocked will be at the end) so
-         * whenever we find a task that hasn't timed out of the purgatory, all of
-         * the next ones too. !rephrase!
-         */
-        list_for_each_entry_safe(ite, tmp, &cfs_rq->purgatory.tasks, tasks) {
-                if (now - ite->purgatory.sleep_timestamp < PURGATORY_TIMEOUT)
-                        break;
-
-                ite->purgatory.kicked_out++;
-                ite->purgatory.sleep_timestamp = 0;
-                list_del(&ite->purgatory.tasks);
-		pr_info("[purgatory] Task timeout from purgatory\n");
-        }
-
-        return 0;
-}
-
 int sched_thermal_decay_shift;
 static int __init setup_sched_thermal_decay_shift(char *str)
 {
@@ -743,6 +716,50 @@ static u64 sched_vslice(struct cfs_rq *cfs_rq, struct sched_entity *se)
 }
 
 #include "pelt.h"
+#define PURGATORY_TIMEOUT 10000
+int clear_purgatory(struct cfs_rq *cfs_rq, struct sched_entity *se)
+{
+        u64 now;
+        struct task_struct *ite, *tmp;
+		struct task_struct *tsk;
+		
+		if (entity_is_task(se)) {
+			tsk = task_of(se);
+		} else {
+			tsk = NULL;
+		}
+		
+		if (!cfs_rq->purgatory.nr) return 0;
+        now = rq_clock_pelt(cfs_rq->rq);
+		pr_info("here here\n");
+
+        /*
+         * As tasks are inserted at the tail of @cfs_rq->purgatory.tasks, it ensures
+         * that they are time-ordered (most recent blocked will be at the end) so
+         * whenever we find a task that hasn't timed out of the purgatory, all of
+         * the next ones too. !rephrase!
+         */
+        list_for_each_entry_safe(ite, tmp, &cfs_rq->purgatory.tasks, tasks) {
+                if (now - ite->purgatory.sleep_timestamp < PURGATORY_TIMEOUT) {
+					break;
+				}
+
+                ite->purgatory.kicked_out++;
+                ite->purgatory.sleep_timestamp = 0;
+                list_del(&ite->purgatory.tasks);
+				pr_info("[purgatory] Task timeout from purgatory\n");
+        }
+
+		if (tsk && tsk->purgatory.sleep_timestamp) {
+			pr_info("[purgatory] Enqueued task removed from purgatory\n");
+			ite->purgatory.kicked_out++;
+			ite->purgatory.sleep_timestamp = 0;
+			list_del(&tsk->purgatory.tasks);
+		}
+        return 0;
+}
+
+
 #ifdef CONFIG_SMP
 
 static int select_idle_sibling(struct task_struct *p, int prev_cpu, int cpu);
@@ -4321,7 +4338,7 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 		se->vruntime += cfs_rq->min_vruntime;
 
 	update_curr(cfs_rq);
-	clear_purgatory(cfs_rq);
+	clear_purgatory(cfs_rq, se);
 	/*
 	 * Otherwise, renormalise after, such that we're placed at the current
 	 * moment in time, instead of some random moment in the past. Being
@@ -4423,8 +4440,9 @@ dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 
 	if (flags & DEQUEUE_SLEEP) {
 		struct task_struct *dequeued = task_of(se);
-		dequeued->purgatory.sleep_timestamp = cfs_rq_clock_pelt(cfs_rq);
+		dequeued->purgatory.sleep_timestamp = rq_clock(cfs_rq->rq);
 		dequeued->purgatory.sleep_count++;
+		cfs_rq->purgatory.nr++;
 		list_add_tail(&dequeued->purgatory.tasks, &cfs_rq->purgatory.tasks);
 		// pr_info("[purgatory] Added tasks to purgatory\n");
 	}
@@ -9857,6 +9875,7 @@ static int load_balance(int this_cpu, struct rq *this_rq,
 	cpumask_and(cpus, sched_domain_span(sd), cpu_active_mask);
 
 	schedstat_inc(sd->lb_count[idle]);
+	clear_purgatory(&this_rq->cfs, NULL);
 
 redo:
 	if (!should_we_balance(&env)) {
