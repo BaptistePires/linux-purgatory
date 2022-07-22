@@ -756,6 +756,7 @@ int clear_purgatory(struct cfs_rq *cfs_rq, struct sched_entity *se)
 			ite->purgatory.sleep_timestamp = 0;
 			list_del(&tsk->purgatory.tasks);
 		}
+		pr_info("end of clear\n");
         return 0;
 }
 
