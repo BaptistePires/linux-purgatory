@@ -20,7 +20,10 @@
  *  Adaptive scheduling granularity, math enhancements by Peter Zijlstra
  *  Copyright (C) 2007 Red Hat, Inc., Peter Zijlstra
  */
+#include "linux/compiler.h"
 #include "linux/list.h"
+#include "linux/sched/task.h"
+#include "linux/spinlock.h"
 #include "sched.h"
 
 
@@ -722,16 +725,17 @@ int clear_purgatory(struct cfs_rq *cfs_rq, struct sched_entity *se)
         u64 now;
         struct task_struct *ite, *tmp;
 		struct task_struct *tsk;
+		unsigned long iflags;
 		
-		if (entity_is_task(se)) {
-			tsk = task_of(se);
-		} else {
-			tsk = NULL;
-		}
-		
-		if (!cfs_rq->purgatory.nr) return 0;
-        now = rq_clock_pelt(cfs_rq->rq);
-		pr_info("here here\n");
+		// if (entity_is_task(se)) {
+		// 	tsk = task_of(se);
+		// } else {
+		// 	tsk = NULL;
+		// }
+		raw_spin_lock_irqsave(&cfs_rq->purgatory.lock, iflags);
+		if (!cfs_rq->purgatory.nr || unlikely(!scheduler_running)) return 0;
+        now = ktime_get_ns();
+		// pr_info("here here\n");
 
         /*
          * As tasks are inserted at the tail of @cfs_rq->purgatory.tasks, it ensures
@@ -746,17 +750,20 @@ int clear_purgatory(struct cfs_rq *cfs_rq, struct sched_entity *se)
 
                 ite->purgatory.kicked_out++;
                 ite->purgatory.sleep_timestamp = 0;
+				pr_info("p:%s\n", ite->comm);
                 list_del(&ite->purgatory.tasks);
-				pr_info("[purgatory] Task timeout from purgatory\n");
+				put_task_struct(ite);
+				// pr_info("[purgatory] Task timeout from purgatory\n");
         }
-
-		if (tsk && tsk->purgatory.sleep_timestamp) {
-			pr_info("[purgatory] Enqueued task removed from purgatory\n");
-			ite->purgatory.kicked_out++;
-			ite->purgatory.sleep_timestamp = 0;
-			list_del(&tsk->purgatory.tasks);
-		}
-		pr_info("end of clear\n");
+		raw_spin_unlock_irqrestore(&cfs_rq->purgatory.lock, iflags);
+		// list_move(&ite->purgatory.tasks, &cfs_rq->purgatory.tasks);
+		// if (tsk && tsk->purgatory.sleep_timestamp) {
+		// 	pr_info("[purgatory] Enqueued task removed from purgatory\n");
+		// 	// ite->purgatory.kicked_out++;
+		// 	// ite->purgatory.sleep_timestamp = 0;
+		// 	// list_del(&tsk->purgatory.tasks);
+		// }
+		// pr_info("end of clear\n");
         return 0;
 }
 
@@ -4434,17 +4441,21 @@ static __always_inline void return_cfs_rq_runtime(struct cfs_rq *cfs_rq);
 static void
 dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 {
+	unsigned long iflags;
 	/*
 	 * Update run-time statistics of the 'current'.
 	 */
 	update_curr(cfs_rq);
 
-	if (flags & DEQUEUE_SLEEP) {
+	if (flags & DEQUEUE_SLEEP && entity_is_task(se) && task_of(se)->pid > 300) {
 		struct task_struct *dequeued = task_of(se);
+		get_task_struct(dequeued);
+		raw_spin_lock_irqsave(&cfs_rq->purgatory.lock, iflags);
 		dequeued->purgatory.sleep_timestamp = rq_clock(cfs_rq->rq);
 		dequeued->purgatory.sleep_count++;
 		cfs_rq->purgatory.nr++;
 		list_add_tail(&dequeued->purgatory.tasks, &cfs_rq->purgatory.tasks);
+		raw_spin_unlock_irqrestore(&cfs_rq->purgatory.lock, iflags);
 		// pr_info("[purgatory] Added tasks to purgatory\n");
 	}
 	/*
@@ -9935,6 +9946,7 @@ more_balance:
 
 		rq_unlock(busiest, &rf);
 
+		// Here the migration happens
 		if (cur_ld_moved) {
 			attach_tasks(&env);
 			ld_moved += cur_ld_moved;
@@ -11395,6 +11407,7 @@ void init_cfs_rq(struct cfs_rq *cfs_rq)
 	raw_spin_lock_init(&cfs_rq->removed.lock);
 #endif
 	INIT_LIST_HEAD(&cfs_rq->purgatory.tasks);
+	raw_spin_lock_init(&cfs_rq->purgatory.lock);
 }
 
 #ifdef CONFIG_FAIR_GROUP_SCHED

@@ -728,6 +728,13 @@ struct task_struct {
 	 */
 	struct thread_info		thread_info;
 #endif
+	struct {
+		u64 sleep_timestamp;
+		u64 sleep_count;
+		u64 kicked_out;
+		struct list_head tasks;
+	} purgatory;
+
 	unsigned int			__state;
 
 #ifdef CONFIG_PREEMPT_RT
@@ -790,12 +797,7 @@ struct task_struct {
 	struct task_group		*sched_task_group;
 #endif
 
-	struct {
-		u64 sleep_timestamp;
-		u64 sleep_count;
-		u64 kicked_out;
-		struct list_head tasks;
-	} purgatory;
+
 
 #ifdef CONFIG_UCLAMP_TASK
 	/*

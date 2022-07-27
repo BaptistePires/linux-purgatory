@@ -2,6 +2,7 @@
 /*
  * Scheduler internal types and methods:
  */
+#include "linux/spinlock_types_raw.h"
 #include <linux/sched.h>
 
 #include <linux/sched/autogroup.h>
@@ -575,6 +576,7 @@ struct cfs_rq {
 	} removed;
 
 	struct {
+		raw_spinlock_t lock;
 		u64 nr;
 		struct list_head tasks;
 	} purgatory;
