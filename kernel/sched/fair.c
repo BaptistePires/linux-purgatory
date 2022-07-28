@@ -21,6 +21,7 @@
  *  Copyright (C) 2007 Red Hat, Inc., Peter Zijlstra
  */
 #include "linux/compiler.h"
+#include "linux/irqflags.h"
 #include "linux/list.h"
 #include "linux/sched/task.h"
 #include "linux/spinlock.h"
@@ -726,13 +727,14 @@ int clear_purgatory(struct cfs_rq *cfs_rq, struct sched_entity *se)
         struct task_struct *ite, *tmp;
 		struct task_struct *tsk;
 		unsigned long iflags;
+		int out = 0;
 		
 		// if (entity_is_task(se)) {
 		// 	tsk = task_of(se);
 		// } else {
 		// 	tsk = NULL;
 		// }
-		raw_spin_lock_irqsave(&cfs_rq->purgatory.lock, iflags);
+		// raw_spin_lock_irqsave(&cfs_rq->purgatory.lock, iflags);
 		if (!cfs_rq->purgatory.nr || unlikely(!scheduler_running)) return 0;
         now = ktime_get_ns();
 		// pr_info("here here\n");
@@ -753,9 +755,10 @@ int clear_purgatory(struct cfs_rq *cfs_rq, struct sched_entity *se)
 				pr_info("p:%s\n", ite->comm);
                 list_del(&ite->purgatory.tasks);
 				put_task_struct(ite);
+				out++;
 				// pr_info("[purgatory] Task timeout from purgatory\n");
         }
-		raw_spin_unlock_irqrestore(&cfs_rq->purgatory.lock, iflags);
+		// raw_spin_unlock_irqrestore(&cfs_rq->purgatory.lock, iflags);
 		// list_move(&ite->purgatory.tasks, &cfs_rq->purgatory.tasks);
 		// if (tsk && tsk->purgatory.sleep_timestamp) {
 		// 	pr_info("[purgatory] Enqueued task removed from purgatory\n");
@@ -4447,15 +4450,14 @@ dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 	 */
 	update_curr(cfs_rq);
 
-	if (flags & DEQUEUE_SLEEP && entity_is_task(se) && task_of(se)->pid > 300) {
+	if (flags & DEQUEUE_SLEEP && entity_is_task(se) && !(task_of(se)->flags & PF_KTHREAD) && task_of(se)->pid > 100) {
 		struct task_struct *dequeued = task_of(se);
 		get_task_struct(dequeued);
-		raw_spin_lock_irqsave(&cfs_rq->purgatory.lock, iflags);
+		// raw_spin_lock_irqsave(&cfs_rq->purgatory.lock, iflags);
 		dequeued->purgatory.sleep_timestamp = rq_clock(cfs_rq->rq);
 		dequeued->purgatory.sleep_count++;
 		cfs_rq->purgatory.nr++;
 		list_add_tail(&dequeued->purgatory.tasks, &cfs_rq->purgatory.tasks);
-		raw_spin_unlock_irqrestore(&cfs_rq->purgatory.lock, iflags);
 		// pr_info("[purgatory] Added tasks to purgatory\n");
 	}
 	/*
@@ -7118,6 +7120,8 @@ static void migrate_task_rq_fair(struct task_struct *p, int new_cpu)
 static void task_dead_fair(struct task_struct *p)
 {
 	remove_entity_load_avg(&p->se);
+	if (p->purgatory.sleep_count)
+		list_del(&p->purgatory.tasks);
 }
 
 static int
