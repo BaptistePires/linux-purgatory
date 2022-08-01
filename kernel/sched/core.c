@@ -83,6 +83,7 @@ const_debug unsigned int sysctl_sched_nr_migrate = 32;
 unsigned int sysctl_sched_rt_period = 1000000;
 
 __read_mostly int scheduler_running;
+__read_mostly bool purgatory_on = false;
 
 #ifdef CONFIG_SCHED_CORE
 

@@ -295,6 +295,7 @@ static const struct file_operations sched_debug_fops = {
 	.release	= seq_release,
 };
 
+extern bool purgatory_on;
 static struct dentry *debugfs_sched;
 
 static __init int sched_init_debug(void)
@@ -305,6 +306,7 @@ static __init int sched_init_debug(void)
 
 	debugfs_create_file("features", 0644, debugfs_sched, NULL, &sched_feat_fops);
 	debugfs_create_bool("verbose", 0644, debugfs_sched, &sched_debug_verbose);
+	debugfs_create_bool("purgatory", 0644, debugfs_sched, &purgatory_on);
 #ifdef CONFIG_PREEMPT_DYNAMIC
 	debugfs_create_file("preempt", 0644, debugfs_sched, NULL, &sched_dynamic_fops);
 #endif
@@ -315,7 +317,7 @@ static __init int sched_init_debug(void)
 
 	debugfs_create_u32("latency_warn_ms", 0644, debugfs_sched, &sysctl_resched_latency_warn_ms);
 	debugfs_create_u32("latency_warn_once", 0644, debugfs_sched, &sysctl_resched_latency_warn_once);
-
+	degugfs_create_u32("trigger_purgatory", 0644, debugsfs_sched, )
 #ifdef CONFIG_SMP
 	debugfs_create_file("tunable_scaling", 0644, debugfs_sched, NULL, &sched_scaling_fops);
 	debugfs_create_u32("migration_cost_ns", 0644, debugfs_sched, &sysctl_sched_migration_cost);
@@ -1073,3 +1075,6 @@ void resched_latency_warn(int cpu, u64 latency)
 	     "without schedule\n",
 	     cpu, latency, cpu_rq(cpu)->ticks_without_resched);
 }
+
+extern int purgatory_on;
+
