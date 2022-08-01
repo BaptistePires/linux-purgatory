@@ -20,10 +20,16 @@
  *  Adaptive scheduling granularity, math enhancements by Peter Zijlstra
  *  Copyright (C) 2007 Red Hat, Inc., Peter Zijlstra
  */
+
+#include "linux/compiler.h"
+#include "linux/irqflags.h"
 #include "linux/list.h"
+#include "linux/sched.h"
+#include "linux/sched/task.h"
+#include "linux/spinlock.h"
 #include "linux/timekeeping.h"
 #include "sched.h"
-
+#include "linux/init.h"
 
 /*
  * Targeted preemption latency for CPU-bound tasks:
@@ -717,14 +723,16 @@ static u64 sched_vslice(struct cfs_rq *cfs_rq, struct sched_entity *se)
 }
 
 #include "pelt.h"
-#define PURGATORY_TIMEOUT 10000
+extern unsigned int sysctl_sched_purgatory_duration;
+extern bool purgatory_on;
 int clear_purgatory(struct cfs_rq *cfs_rq, struct sched_entity *se)
 {
         u64 now;
-	unsigned long flags;
+
         struct task_struct *ite, *tmp;
 	struct task_struct *tsk;
-	
+	if (!purgatory_on) return 0;
+
 	if (entity_is_task(se)) {
 		tsk = task_of(se);
 	} else {
@@ -733,7 +741,7 @@ int clear_purgatory(struct cfs_rq *cfs_rq, struct sched_entity *se)
 	// pr_info("[purgatory} inside\n");
 	if (!cfs_rq->purgatory.nr) return 0;
         // now = rq_clock_pelt(cfs_rq->rq);
-	now = 100;
+	now = ktime_get_ns();
 
         /*
          * As tasks are inserted at the tail of @cfs_rq->purgatory.tasks, it ensures
@@ -744,14 +752,14 @@ int clear_purgatory(struct cfs_rq *cfs_rq, struct sched_entity *se)
 	// raw_spin_lock(&cfs_rq->purgatory.lock);
 	// raw_spin_lock_irqsave(&cfs_rq->purgatory.lock, flags);
 	list_for_each_entry_safe(ite, tmp, &cfs_rq->purgatory.tasks, tasks) {
-			if (now - ite->purgatory.sleep_timestamp < PURGATORY_TIMEOUT) {
-		break;
-	}
+		if (now - ite->purgatory.sleep_timestamp < sysctl_sched_purgatory_duration) {
+			break;
+		}
 
-			ite->purgatory.kicked_out++;
-			ite->purgatory.sleep_timestamp = 0;
-			// list_del(&ite->purgatory.tasks);
-	// pr_info("[purgatory] Task timeout from purgatory\n");
+		ite->purgatory.kicked_out++;
+		ite->purgatory.sleep_timestamp = 0;
+		list_del(&ite->purgatory.tasks);
+		pr_info("[purgatory] Task timeout from purgatory\n");
 	}
 	// raw_spin_unlock_irqrestore(&cfs_rq->purgatory.lock, flags);
 
@@ -4346,7 +4354,7 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 		se->vruntime += cfs_rq->min_vruntime;
 
 	update_curr(cfs_rq);
-	// clear_purgatory(cfs_rq, se);
+	clear_purgatory(cfs_rq, se);
 	/*
 	 * Otherwise, renormalise after, such that we're placed at the current
 	 * moment in time, instead of some random moment in the past. Being
@@ -4452,6 +4460,14 @@ dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 	
 	update_curr(cfs_rq);
 
+	if (purgatory_on && flags & DEQUEUE_SLEEP && entity_is_task(se)) {
+		struct task_struct *dequeued = task_of(se);
+		dequeued->purgatory.sleep_count++;
+		dequeued->purgatory.sleep_timestamp = ktime_get_ns();		
+		cfs_rq->purgatory.nr++;
+		list_add_tail(&dequeued->purgatory.tasks, &cfs_rq->purgatory.tasks);
+		// if(!(dequeued->flags & PF_KTHREAD))  pr_info("[purgatory] Task added to purgatory\n");
+	}
 	// if (purgatory_on && flags & DEQUEUE_SLEEP && entity_is_task(se)) {
 	// 	struct task_struct *dequeued = task_of(se);
 	// 	dequeued->purgatory.sleep_timestamp = 100;
@@ -11811,6 +11827,8 @@ void show_numa_stats(struct task_struct *p, struct seq_file *m)
 #endif /* CONFIG_NUMA_BALANCING */
 #endif /* CONFIG_SCHED_DEBUG */
 
+extern bool purgatory_on;
+
 __init void init_sched_fair_class(void)
 {
 #ifdef CONFIG_SMP
@@ -11822,9 +11840,20 @@ __init void init_sched_fair_class(void)
 	zalloc_cpumask_var(&nohz.idle_cpus_mask, GFP_NOWAIT);
 #endif
 #endif /* SMP */
-
+	
 }
 
+extern unsigned int sysctl_sched_purgatory_duration;
+
+static __init int init_purgatory_fs()
+{
+	debugfs_create_bool("purgatory_on", 0644, NULL, &purgatory_on);
+	debugfs_create_u32("purgatory_duration", 0644, NULL, &sysctl_sched_purgatory_duration);
+	pr_info("[purgatory] Should have created d\n");
+	return 0;
+}
+
+late_initcall(init_purgatory_fs);
 /*
  * Helper functions to facilitate extracting info from tracepoints.
  */

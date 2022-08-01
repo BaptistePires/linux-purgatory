@@ -84,6 +84,7 @@ unsigned int sysctl_sched_rt_period = 1000000;
 
 __read_mostly int scheduler_running;
 __read_mostly bool purgatory_on = false;
+unsigned int sysctl_sched_purgatory_duration = 100000;
 
 #ifdef CONFIG_SCHED_CORE
 
