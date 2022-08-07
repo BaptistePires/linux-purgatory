@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
+#include "linux/list.h"
+#include "linux/spinlock_types_raw.h"
 #include <linux/init_task.h>
 #include <linux/export.h>
 #include <linux/mqueue.h>
@@ -214,6 +216,13 @@ struct task_struct init_task
 #ifdef CONFIG_SECCOMP_FILTER
 	.seccomp	= { .filter_count = ATOMIC_INIT(0) },
 #endif
+	.purgatory = {
+		.lock = __RAW_SPIN_LOCK_UNLOCKED(init_task.purgatory.lock),
+		.tasks = LIST_HEAD_INIT(init_task.purgatory.tasks),
+		.kicked_out = 0,
+		.sleep_count = 0,
+		.sleep_timestamp = 0
+	}
 };
 EXPORT_SYMBOL(init_task);
 

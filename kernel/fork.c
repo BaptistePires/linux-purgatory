@@ -12,6 +12,8 @@
  * management can be a bitch. See 'mm/memory.c': 'copy_page_range()'
  */
 
+#include "linux/list.h"
+#include "linux/spinlock.h"
 #include <linux/anon_inodes.h>
 #include <linux/slab.h>
 #include <linux/sched/autogroup.h>
@@ -970,6 +972,13 @@ static struct task_struct *dup_task_struct(struct task_struct *orig, int node)
 #ifdef CONFIG_MEMCG
 	tsk->active_memcg = NULL;
 #endif
+
+	raw_spin_lock_init(&tsk->purgatory.lock);
+	INIT_LIST_HEAD(&tsk->purgatory.tasks);
+	tsk->purgatory.kicked_out = 0;
+	tsk->purgatory.sleep_count = 0;
+	tsk->purgatory.sleep_timestamp = 0;
+
 	return tsk;
 
 free_stack:
@@ -2159,7 +2168,11 @@ static __latent_entropy struct task_struct *copy_process(
 	RCU_INIT_POINTER(p->bpf_storage, NULL);
 	p->bpf_ctx = NULL;
 #endif
-
+	raw_spin_lock_init(&p->purgatory.lock);
+	INIT_LIST_HEAD(&p->purgatory.tasks);
+	p->purgatory.kicked_out = 0;
+	p->purgatory.sleep_timestamp = 0;
+	p->purgatory.sleep_count = 0;
 	/* Perform scheduler related setup. Assign this task to a CPU. */
 	retval = sched_fork(clone_flags, p);
 	if (retval)

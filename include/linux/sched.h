@@ -7,6 +7,7 @@
  * APIs (schedule(), wakeup variants, etc.)
  */
 
+#include "linux/spinlock_types_raw.h"
 #include <uapi/linux/sched.h>
 
 #include <asm/current.h>
@@ -729,6 +730,7 @@ struct task_struct {
 	struct thread_info		thread_info;
 #endif
 	struct {
+		raw_spinlock_t lock;
 		u64 sleep_timestamp;
 		u64 sleep_count;
 		u64 kicked_out;

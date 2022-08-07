@@ -21,6 +21,7 @@
  *  Copyright (C) 2007 Red Hat, Inc., Peter Zijlstra
  */
 
+#include "asm/current.h"
 #include "linux/compiler.h"
 #include "linux/irqflags.h"
 #include "linux/list.h"
@@ -30,6 +31,7 @@
 #include "linux/timekeeping.h"
 #include "sched.h"
 #include "linux/init.h"
+#include "linux/string.h"
 
 /*
  * Targeted preemption latency for CPU-bound tasks:
@@ -106,6 +108,7 @@ static int __init setup_sched_thermal_decay_shift(char *str)
 }
 __setup("sched_thermal_decay_shift=", setup_sched_thermal_decay_shift);
 
+int clear_purgatory(struct cfs_rq*);
 #ifdef CONFIG_SMP
 /*
  * For asym packing, by default the lower numbered CPU has higher priority.
@@ -725,55 +728,6 @@ static u64 sched_vslice(struct cfs_rq *cfs_rq, struct sched_entity *se)
 #include "pelt.h"
 extern unsigned int sysctl_sched_purgatory_duration;
 extern bool purgatory_on;
-int clear_purgatory(struct cfs_rq *cfs_rq, struct sched_entity *se)
-{
-        u64 now;
-
-        struct task_struct *ite, *tmp;
-	struct task_struct *tsk;
-	if (!purgatory_on) return 0;
-
-	if (entity_is_task(se)) {
-		tsk = task_of(se);
-	} else {
-		tsk = NULL;
-	}
-	// pr_info("[purgatory} inside\n");
-	if (!cfs_rq->purgatory.nr) return 0;
-        // now = rq_clock_pelt(cfs_rq->rq);
-	now = ktime_get_ns();
-
-        /*
-         * As tasks are inserted at the tail of @cfs_rq->purgatory.tasks, it ensures
-         * that they are time-ordered (most recent blocked will be at the end) so
-         * whenever we find a task that hasn't timed out of the purgatory, all of
-         * the next ones too. !rephrase!
-         */
-	// raw_spin_lock(&cfs_rq->purgatory.lock);
-	// raw_spin_lock_irqsave(&cfs_rq->purgatory.lock, flags);
-	list_for_each_entry_safe(ite, tmp, &cfs_rq->purgatory.tasks, tasks) {
-		if (now - ite->purgatory.sleep_timestamp < sysctl_sched_purgatory_duration) {
-			break;
-		}
-
-		ite->purgatory.kicked_out++;
-		ite->purgatory.sleep_timestamp = 0;
-		list_del(&ite->purgatory.tasks);
-		pr_info("[purgatory] Task timeout from purgatory\n");
-	}
-	// raw_spin_unlock_irqrestore(&cfs_rq->purgatory.lock, flags);
-
-	// raw_spin_unlock(&cfs_rq->purgatory.lock);
-
-	if (tsk && tsk->purgatory.sleep_timestamp) {
-		// pr_info("[purgatory] Enqueued task removed from purgatory\n");
-		// tsk->purgatory.kicked_out++;
-		// tsk->purgatory.sleep_timestamp = 0;
-		// list_del(&tsk->purgatory.tasks);
-	}
-	// pr_info("end of clear_purgatory\n");
-        return 0;
-}
 
 
 #ifdef CONFIG_SMP
@@ -3902,6 +3856,8 @@ static void detach_entity_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *s
 #define SKIP_AGE_LOAD	0x2
 #define DO_ATTACH	0x4
 
+
+
 /* Update task and its cfs_rq load average */
 static inline void update_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 {
@@ -4354,7 +4310,7 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 		se->vruntime += cfs_rq->min_vruntime;
 
 	update_curr(cfs_rq);
-	clear_purgatory(cfs_rq, se);
+	clear_purgatory(cfs_rq);
 	/*
 	 * Otherwise, renormalise after, such that we're placed at the current
 	 * moment in time, instead of some random moment in the past. Being
@@ -4400,6 +4356,69 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 	
 	// pr_info("enqeueu : %s\n", task_of(se)->comm);
 }
+
+int clear_purgatory(struct cfs_rq *cfs_rq)
+{
+        u64 now;
+	u64 out;
+        struct task_struct *ite, *tmp;
+
+	if (!purgatory_on) return 0;;
+	if (!cfs_rq->purgatory.nr) return 0;
+
+	now = ktime_get_ns();
+
+        /*
+         * As tasks are inserted at the tail of @cfs_rq->purgatory.tasks, it ensures
+         * that they are time-ordered (most recent blocked will be at the end) so
+         * whenever we find a task that hasn't timed out of the purgatory, all of
+         * the next ones too. !rephrase!
+         */
+	out = 0;
+
+	raw_spin_lock(&cfs_rq->purgatory.lock);
+
+	list_for_each_entry_safe(ite, tmp, &cfs_rq->purgatory.tasks, purgatory.tasks) {
+		raw_spin_lock(&ite->purgatory.lock);
+		if ((now - ite->purgatory.sleep_timestamp) <= sysctl_sched_purgatory_duration) {
+			raw_spin_unlock(&ite->purgatory.lock);
+			break;
+		}
+		// pr_info("[purgatory] %s removed\n", ite->comm);
+		ite->purgatory.kicked_out++;
+		ite->purgatory.sleep_timestamp = 0;
+		list_del(&ite->purgatory.tasks);
+		
+		raw_spin_unlock(&ite->purgatory.lock);
+		update_load_avg(cfs_rq, &ite->se, UPDATE_TG);
+		account_entity_dequeue(cfs_rq, &ite->se);
+		put_task_struct(ite);
+
+		cfs_rq->purgatory.nr--;
+		out++;
+	}
+	// pr_info("[purgatory] Removed %llu tasks\n", out);
+	
+	raw_spin_unlock(&cfs_rq->purgatory.lock);
+
+        return out;
+}
+
+void init_task_purgatory(struct task_struct *tsk)
+{
+	INIT_LIST_HEAD(&tsk->purgatory.tasks);
+	tsk->purgatory.sleep_timestamp = 0;
+	tsk->purgatory.sleep_count = 0;
+	tsk->purgatory.kicked_out = 0;
+}
+
+void init_cfs_rq_purgatory(struct cfs_rq *cfs_rq)
+{
+	INIT_LIST_HEAD(&cfs_rq->purgatory.tasks);
+	raw_spin_lock_init(&cfs_rq->purgatory.lock);
+	cfs_rq->purgatory.nr = 0;
+}
+
 
 static void __clear_buddies_last(struct sched_entity *se)
 {
@@ -4453,34 +4472,28 @@ extern bool purgatory_on;
 static void
 dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 {
-	// unsigned long iflags;
+	bool added_purgatory = false;
 	/*
 	 * Update run-time statistics of the 'current'.
 	 */
 	
 	update_curr(cfs_rq);
 
-	if (purgatory_on && flags & DEQUEUE_SLEEP && entity_is_task(se)) {
+	if (purgatory_on && (flags & DEQUEUE_SLEEP) && entity_is_task(se) && !task_of(se)->purgatory.sleep_timestamp) {
 		struct task_struct *dequeued = task_of(se);
+		get_task_struct(dequeued);
+		raw_spin_lock(&dequeued->purgatory.lock);
 		dequeued->purgatory.sleep_count++;
-		dequeued->purgatory.sleep_timestamp = ktime_get_ns();		
-		cfs_rq->purgatory.nr++;
+		dequeued->purgatory.sleep_timestamp = ktime_get_ns();
+		raw_spin_lock(&cfs_rq->purgatory.lock);
 		list_add_tail(&dequeued->purgatory.tasks, &cfs_rq->purgatory.tasks);
-		// if(!(dequeued->flags & PF_KTHREAD))  pr_info("[purgatory] Task added to purgatory\n");
+		cfs_rq->purgatory.nr++;
+		raw_spin_unlock(&cfs_rq->purgatory.lock);
+		raw_spin_unlock(&dequeued->purgatory.lock);
+		// pr_info("[purgatory] %s added to purgatory\n", dequeued->comm);
+		added_purgatory = true;
 	}
-	// if (purgatory_on && flags & DEQUEUE_SLEEP && entity_is_task(se)) {
-	// 	struct task_struct *dequeued = task_of(se);
-	// 	dequeued->purgatory.sleep_timestamp = 100;
-	// 	// dequeued->purgatory.sleep_count;
-	// 	cfs_rq->purgatory.nr++;
-	// 	// pr_info("dequeued : %s \n",dequeued->comm);
-	// 	// raw_spin_lock(&cfs_rq->purgatory.lock);
-	// 	// raw_spin_lock_irqsave(&cfs_rq->purgatory.lock, iflags);
-	// 	list_add_tail(&dequeued->purgatory.tasks, &cfs_rq->purgatory.tasks);
-	// 	// raw_spin_unlock_irqrestore(&cfs_rq->purgatory.lock, iflags);
-	// 	// raw_spin_unlock(&cfs_rq->purgatory.lock);
-	// 	// pr_info("[purgatory] Added tasks to purgatory\n");
-	// }
+
 	/*
 	 * When dequeuing a sched_entity, we must:
 	 *   - Update loads to have both entity and cfs_rq synced with now.
@@ -4490,6 +4503,8 @@ dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 	 *     of its group cfs_rq.
 	 */
 	update_load_avg(cfs_rq, se, UPDATE_TG);
+
+
 
 	// Only does something if the sched_entity @se is not a task.
 	se_update_runnable(se);
@@ -4533,6 +4548,7 @@ dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 	 */
 	if ((flags & (DEQUEUE_SAVE | DEQUEUE_MOVE)) != DEQUEUE_SAVE)
 		update_min_vruntime(cfs_rq);
+	// if (added_purgatory) update_load_add(&cfs_rq->load, se->load_avg.);
 }
 
 /*
@@ -11424,8 +11440,7 @@ void init_cfs_rq(struct cfs_rq *cfs_rq)
 #ifdef CONFIG_SMP
 	raw_spin_lock_init(&cfs_rq->removed.lock);
 #endif
-	raw_spin_lock_init(&cfs_rq->purgatory.lock);
-	INIT_LIST_HEAD(&cfs_rq->purgatory.tasks);
+	init_cfs_rq_purgatory(cfs_rq);
 }
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
