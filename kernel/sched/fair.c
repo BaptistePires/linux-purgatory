@@ -3855,7 +3855,7 @@ static void detach_entity_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *s
 #define UPDATE_TG	0x1
 #define SKIP_AGE_LOAD	0x2
 #define DO_ATTACH	0x4
-
+#define KEEP_LOAD 0x8
 
 
 /* Update task and its cfs_rq load average */
