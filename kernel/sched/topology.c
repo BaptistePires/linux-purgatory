@@ -1526,7 +1526,7 @@ sd_init(struct sched_domain_topology_level *tl,
 #endif
 
 	sd_weight = cpumask_weight(tl->mask(cpu));
-
+	
 	if (tl->sd_flags)
 		sd_flags = (*tl->sd_flags)();
 	if (WARN_ONCE(sd_flags & ~TOPOLOGY_SD_FLAGS,
