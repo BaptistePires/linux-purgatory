@@ -3864,6 +3864,8 @@ static inline void update_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *s
 	u64 now = cfs_rq_clock_pelt(cfs_rq);
 	int decayed;
 
+	clear_purgatory(cfs_rq);
+
 	/*
 	 * Track task load average for carrying it to new CPU after migrated, and
 	 * track group sched_entity load average for task_h_load calc in migration
@@ -4357,51 +4359,57 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 	// pr_info("enqeueu : %s\n", task_of(se)->comm);
 }
 
+
+/*
+	This function remove a sched_entity from the purgatory.
+*/
+void inline purgatory_remove(struct cfs_rq *cfs_rq, struct sched_entity *se,
+						u64 now)
+{
+		struct task_struct *task = task_of(se);
+		raw_spin_lock(&task->purgatory.lock);
+		if (now - task->purgatory.sleep_timestamp <= sysctl_sched_purgatory_duration) {
+			raw_spin_unlock(&task->purgatory.lock);
+			return;
+		}
+
+		task->purgatory.kicked_out++;
+		task->purgatory.sleep_timestamp = 0;
+		list_del(&task->purgatory.tasks);
+		raw_spin_unlock(&task->purgatory.lock);
+
+		update_load_avg(cfs_rq, &task->se, UPDATE_TG);
+		put_task_struct(task);
+}
+
 int clear_purgatory(struct cfs_rq *cfs_rq)
 {
-        u64 now;
+	u64 now;
 	u64 out;
-        struct task_struct *ite, *tmp;
+	struct task_struct *ite, *tmp;
 
-	if (!purgatory_on) return 0;;
-	if (!cfs_rq->purgatory.nr) return 0;
+	if (!purgatory_on || !cfs_rq->purgatory.nr) return 0;
 
 	now = ktime_get_ns();
+	out = 0;
 
-        /*
+	raw_spin_lock(&cfs_rq->purgatory.lock);
+    /*
          * As tasks are inserted at the tail of @cfs_rq->purgatory.tasks, it ensures
          * that they are time-ordered (most recent blocked will be at the end) so
          * whenever we find a task that hasn't timed out of the purgatory, all of
          * the next ones too. !rephrase!
-         */
-	out = 0;
-
-	raw_spin_lock(&cfs_rq->purgatory.lock);
-
+	*/
 	list_for_each_entry_safe(ite, tmp, &cfs_rq->purgatory.tasks, purgatory.tasks) {
-		raw_spin_lock(&ite->purgatory.lock);
-		if ((now - ite->purgatory.sleep_timestamp) <= sysctl_sched_purgatory_duration) {
-			raw_spin_unlock(&ite->purgatory.lock);
-			break;
-		}
-		// pr_info("[purgatory] %s removed\n", ite->comm);
-		ite->purgatory.kicked_out++;
-		ite->purgatory.sleep_timestamp = 0;
-		list_del(&ite->purgatory.tasks);
-		
-		raw_spin_unlock(&ite->purgatory.lock);
-		update_load_avg(cfs_rq, &ite->se, UPDATE_TG);
-		// account_entity_dequeue(cfs_rq, &ite->se);
-		put_task_struct(ite);
-
-		cfs_rq->purgatory.nr--;
+		purgatory_remove(cfs_rq, &ite->se, now);
 		out++;
 	}
-	// pr_info("[purgatory] Removed %llu tasks\n", out);
+
+	cfs_rq->purgatory.nr -= out;
 	
 	raw_spin_unlock(&cfs_rq->purgatory.lock);
 
-        return out;
+	return out;
 }
 
 int purgatory_add(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
@@ -4422,6 +4430,7 @@ int purgatory_add(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 
 	return 1;
 }
+
 
 void init_task_purgatory(struct task_struct *tsk)
 {
@@ -5735,6 +5744,7 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 	if (p->in_iowait)
 		cpufreq_update_util(rq, SCHED_CPUFREQ_IOWAIT);
 
+	
 	for_each_sched_entity(se) {
 		if (se->on_rq)
 			break;
@@ -7166,7 +7176,7 @@ balance_fair(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 {
 	if (rq->nr_running)
 		return 1;
-
+	clear_purgatory(&rq->cfs);
 	return newidle_balance(rq, rf) != 0;
 }
 #endif /* CONFIG_SMP */
