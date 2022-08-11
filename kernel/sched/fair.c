@@ -4391,7 +4391,7 @@ int clear_purgatory(struct cfs_rq *cfs_rq)
 		
 		raw_spin_unlock(&ite->purgatory.lock);
 		update_load_avg(cfs_rq, &ite->se, UPDATE_TG);
-		account_entity_dequeue(cfs_rq, &ite->se);
+		// account_entity_dequeue(cfs_rq, &ite->se);
 		put_task_struct(ite);
 
 		cfs_rq->purgatory.nr--;
@@ -4402,6 +4402,25 @@ int clear_purgatory(struct cfs_rq *cfs_rq)
 	raw_spin_unlock(&cfs_rq->purgatory.lock);
 
         return out;
+}
+
+int purgatory_add(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
+{
+	struct task_struct *dequeued = entity_is_task(se) ? task_of(se) : NULL;
+	if (purgatory_on && (flags & DEQUEUE_SLEEP) && dequeued && dequeued->purgatory.sleep_timestamp) {
+		get_task_struct(dequeued);
+		raw_spin_lock(&dequeued->purgatory.lock);
+		dequeued->purgatory.sleep_count++;
+		dequeued->purgatory.sleep_timestamp = ktime_get_ns();
+		raw_spin_lock(&cfs_rq->purgatory.lock);
+		list_add_tail(&dequeued->purgatory.tasks, &cfs_rq->purgatory.tasks);
+		cfs_rq->purgatory.nr++;
+		raw_spin_unlock(&cfs_rq->purgatory.lock);
+		raw_spin_unlock(&dequeued->purgatory.lock);
+		return 0;
+	}
+
+	return 1;
 }
 
 void init_task_purgatory(struct task_struct *tsk)
@@ -4472,28 +4491,15 @@ extern bool purgatory_on;
 static void
 dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 {
-	bool added_purgatory = false;
+	int added_purgatory;
 	/*
 	 * Update run-time statistics of the 'current'.
 	 */
 	
 	update_curr(cfs_rq);
 
-	if (purgatory_on && (flags & DEQUEUE_SLEEP) && entity_is_task(se) && !task_of(se)->purgatory.sleep_timestamp) {
-		struct task_struct *dequeued = task_of(se);
-		get_task_struct(dequeued);
-		raw_spin_lock(&dequeued->purgatory.lock);
-		dequeued->purgatory.sleep_count++;
-		dequeued->purgatory.sleep_timestamp = ktime_get_ns();
-		raw_spin_lock(&cfs_rq->purgatory.lock);
-		list_add_tail(&dequeued->purgatory.tasks, &cfs_rq->purgatory.tasks);
-		cfs_rq->purgatory.nr++;
-		raw_spin_unlock(&cfs_rq->purgatory.lock);
-		raw_spin_unlock(&dequeued->purgatory.lock);
-		// pr_info("[purgatory] %s added to purgatory\n", dequeued->comm);
-		added_purgatory = true;
-	}
 
+	added_purgatory = purgatory_add(cfs_rq, se, flags);
 	/*
 	 * When dequeuing a sched_entity, we must:
 	 *   - Update loads to have both entity and cfs_rq synced with now.
@@ -4502,7 +4508,7 @@ dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 	 *   - For group entity, update its weight to reflect the new share
 	 *     of its group cfs_rq.
 	 */
-	update_load_avg(cfs_rq, se, UPDATE_TG);
+	if (added_purgatory) update_load_avg(cfs_rq, se, UPDATE_TG);
 
 
 
@@ -9922,13 +9928,13 @@ static int load_balance(int this_cpu, struct rq *this_rq,
 	cpumask_and(cpus, sched_domain_span(sd), cpu_active_mask);
 
 	schedstat_inc(sd->lb_count[idle]);
-	// clear_purgatory(&this_rq->cfs, NULL);
 
 redo:
 	if (!should_we_balance(&env)) {
 		*continue_balancing = 0;
 		goto out_balanced;
 	}
+
 
 	group = find_busiest_group(&env);
 	if (!group) {
