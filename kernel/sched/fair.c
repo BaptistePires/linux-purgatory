@@ -23,6 +23,7 @@
 
 #include "asm/current.h"
 #include "linux/compiler.h"
+#include "linux/export.h"
 #include "linux/irqflags.h"
 #include "linux/list.h"
 #include "linux/sched.h"
@@ -3015,16 +3016,19 @@ account_entity_enqueue(struct cfs_rq *cfs_rq, struct sched_entity *se)
 }
 
 static void
-account_entity_dequeue(struct cfs_rq *cfs_rq, struct sched_entity *se)
+account_entity_dequeue(struct cfs_rq *cfs_rq, struct sched_entity *se, int do_sub_weight)
 {
-	update_load_sub(&cfs_rq->load, se->load.weight);
+	if (do_sub_weight) {
+		update_load_sub(&cfs_rq->load, se->load.weight);
+	} else {
 #ifdef CONFIG_SMP
-	if (entity_is_task(se)) {
-		account_numa_dequeue(rq_of(cfs_rq), task_of(se));
-		list_del_init(&se->group_node);
-	}
+		if (entity_is_task(se)) {
+			account_numa_dequeue(rq_of(cfs_rq), task_of(se));
+			list_del_init(&se->group_node);
+		}
 #endif
-	cfs_rq->nr_running--;
+		cfs_rq->nr_running--;
+	}
 }
 
 /*
@@ -4379,6 +4383,7 @@ void inline purgatory_remove(struct cfs_rq *cfs_rq, struct sched_entity *se,
 		raw_spin_unlock(&task->purgatory.lock);
 
 		update_load_avg(cfs_rq, &task->se, UPDATE_TG);
+		account_entity_dequeue(cfs_rq, se, 1);
 		put_task_struct(task);
 }
 
@@ -4537,7 +4542,7 @@ dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 	se->on_rq = 0;
 
 	// nr_running is updated here
-	account_entity_dequeue(cfs_rq, se);
+	account_entity_dequeue(cfs_rq, se, 0);
 
 	/*
 	 * Normalize after update_curr(); which will also have moved
@@ -4548,7 +4553,7 @@ dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 	if (!(flags & DEQUEUE_SLEEP)) {
 		se->vruntime -= cfs_rq->min_vruntime;
 	}
-		
+
 
 	/* return excess runtime on last dequeue */
 	return_cfs_rq_runtime(cfs_rq);
@@ -7122,6 +7127,7 @@ static void migrate_task_rq_fair(struct task_struct *p, int new_cpu)
 		struct cfs_rq *cfs_rq = cfs_rq_of(se);
 		u64 min_vruntime;
 
+		clear_purgatory(cfs_rq);
 #ifndef CONFIG_64BIT
 		u64 min_vruntime_copy;
 
@@ -9908,6 +9914,8 @@ static int should_we_balance(struct lb_env *env)
 	return group_balance_cpu(sg) == env->dst_cpu;
 }
 
+void (* lb_monitoring) (int, int);
+EXPORT_SYMBOL(lb_monitoring);
 /*
  * Check this_cpu to ensure it is balanced within domain. Attempt to move
  * tasks if there is an imbalance.
@@ -9945,7 +9953,7 @@ redo:
 		goto out_balanced;
 	}
 
-
+	clear_purgatory(&this_rq->cfs);
 	group = find_busiest_group(&env);
 	if (!group) {
 		schedstat_inc(sd->lb_nobusyg[idle]);
@@ -9957,7 +9965,7 @@ redo:
 		schedstat_inc(sd->lb_nobusyq[idle]);
 		goto out_balanced;
 	}
-
+	clear_purgatory(&busiest->cfs);
 	BUG_ON(busiest == env.dst_rq);
 
 	schedstat_add(sd->lb_imbalance[idle], env.imbalance);
@@ -10175,6 +10183,8 @@ out_one_pinned:
 	    sd->balance_interval < sd->max_interval)
 		sd->balance_interval *= 2;
 out:
+	if (lb_monitoring && ld_moved)
+		lb_monitoring(ld_moved, 0);
 	return ld_moved;
 }
 
