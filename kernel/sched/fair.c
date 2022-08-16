@@ -3020,15 +3020,15 @@ account_entity_dequeue(struct cfs_rq *cfs_rq, struct sched_entity *se, int do_su
 {
 	if (do_sub_weight) {
 		update_load_sub(&cfs_rq->load, se->load.weight);
-	} else {
-#ifdef CONFIG_SMP
-		if (entity_is_task(se)) {
-			account_numa_dequeue(rq_of(cfs_rq), task_of(se));
-			list_del_init(&se->group_node);
-		}
-#endif
-		cfs_rq->nr_running--;
 	}
+#ifdef CONFIG_SMP
+	if (entity_is_task(se)) {
+		account_numa_dequeue(rq_of(cfs_rq), task_of(se));
+		list_del_init(&se->group_node);
+	}
+#endif
+	cfs_rq->nr_running--;
+	
 }
 
 /*
@@ -4430,10 +4430,10 @@ int purgatory_add(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 		cfs_rq->purgatory.nr++;
 		raw_spin_unlock(&cfs_rq->purgatory.lock);
 		raw_spin_unlock(&dequeued->purgatory.lock);
-		return 0;
+		return 1;
 	}
 
-	return 1;
+	return 0;
 }
 
 
@@ -4522,7 +4522,7 @@ dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 	 *   - For group entity, update its weight to reflect the new share
 	 *     of its group cfs_rq.
 	 */
-	if (added_purgatory) update_load_avg(cfs_rq, se, UPDATE_TG);
+	if (!added_purgatory) update_load_avg(cfs_rq, se, UPDATE_TG);
 
 
 
@@ -4542,7 +4542,7 @@ dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 	se->on_rq = 0;
 
 	// nr_running is updated here
-	account_entity_dequeue(cfs_rq, se, 0);
+	account_entity_dequeue(cfs_rq, se, !added_purgatory);
 
 	/*
 	 * Normalize after update_curr(); which will also have moved
@@ -7127,6 +7127,7 @@ static void migrate_task_rq_fair(struct task_struct *p, int new_cpu)
 		struct cfs_rq *cfs_rq = cfs_rq_of(se);
 		u64 min_vruntime;
 
+		// TODO : Check if rly useful ?
 		clear_purgatory(cfs_rq);
 #ifndef CONFIG_64BIT
 		u64 min_vruntime_copy;
@@ -7182,7 +7183,7 @@ balance_fair(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 {
 	if (rq->nr_running)
 		return 1;
-	clear_purgatory(&rq->cfs);
+	
 	return newidle_balance(rq, rf) != 0;
 }
 #endif /* CONFIG_SMP */

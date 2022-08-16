@@ -69,6 +69,9 @@ struct signal_struct;
 struct task_delay_info;
 struct task_group;
 
+extern int is_monitoring_blocked_times;
+extern void (*update_blocked_time_fn)(pid_t pid, u64 wakeup_date, u64 duration);
+
 /*
  * Task state bitmask. NOTE! These bits are also
  * encoded in fs/proc/array.c: get_task_state().
@@ -163,6 +166,19 @@ struct task_group;
 # define debug_rtlock_wait_restore_state()	do { } while (0)
 #endif
 
+#define update_last_blocked(state_value) { \
+	if (update_blocked_time_fn) { \
+		u64 ____delta, ____current_time; \
+		if (((state_value) & TASK_INTERRUPTIBLE) || ((state_value) & TASK_UNINTERRUPTIBLE)) {  \
+			current->last_blocked = ktime_get_ns();  \
+		} else if ((state_value) == TASK_RUNNING && current->last_blocked){  \
+			____current_time = ktime_get_ns(); \
+			____delta = ____current_time - current->last_blocked; \
+			update_blocked_time_fn(task_pid_nr(current), ____current_time, ____delta); \
+			current->last_blocked = 0; \
+		}  \
+	} \
+}
 /*
  * set_current_state() includes a barrier so that the write of current->state
  * is correctly serialised wrt the caller's subsequent test of whether to
@@ -202,12 +218,14 @@ struct task_group;
  */
 #define __set_current_state(state_value)				\
 	do {								\
+		update_last_blocked((state_value)); 			\
 		debug_normal_state_change((state_value));		\
 		WRITE_ONCE(current->__state, (state_value));		\
 	} while (0)
 
 #define set_current_state(state_value)					\
 	do {								\
+		update_last_blocked((state_value)); 			\
 		debug_normal_state_change((state_value));		\
 		smp_store_mb(current->__state, (state_value));		\
 	} while (0)
@@ -777,6 +795,11 @@ struct task_struct {
 	int				recent_used_cpu;
 	int				wake_cpu;
 #endif
+
+	ktime_t last_blocked;
+	bool is_monitored;
+	void (*update_state)(pid_t, u64);
+	
 	int				on_rq;
 
 	int				prio;

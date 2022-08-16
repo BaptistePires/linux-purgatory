@@ -86,6 +86,11 @@ __read_mostly int scheduler_running;
 __read_mostly bool purgatory_on = false;
 unsigned int sysctl_sched_purgatory_duration = 100000;
 
+int is_monitoring_blocked_times = 0;
+void (*update_blocked_time_fn)(pid_t pid, u64 wakeup_date, u64 duration);
+EXPORT_SYMBOL(is_monitoring_blocked_times);
+EXPORT_SYMBOL(update_blocked_time_fn);
+
 #ifdef CONFIG_SCHED_CORE
 
 DEFINE_STATIC_KEY_FALSE(__sched_core_enabled);
