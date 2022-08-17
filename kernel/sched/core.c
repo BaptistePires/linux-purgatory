@@ -3914,6 +3914,7 @@ bool ttwu_state_match(struct task_struct *p, unsigned int state, int *success)
  * accesses to the task state; see try_to_wake_up() and set_current_state().
  */
 
+extern int clear_purgatory(struct cfs_rq *rq);
 /**
  * try_to_wake_up - wake up a thread
  * @p: the thread to be awakened
@@ -3956,6 +3957,9 @@ try_to_wake_up(struct task_struct *p, unsigned int state, int wake_flags)
 {
 	unsigned long flags;
 	int cpu, success = 0;
+
+	if(task_rq(p))
+		clear_purgatory(&task_rq(p)->cfs);
 
 	preempt_disable();
 	if (p == current) {

@@ -3868,7 +3868,7 @@ static inline void update_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *s
 	u64 now = cfs_rq_clock_pelt(cfs_rq);
 	int decayed;
 
-	clear_purgatory(cfs_rq);
+	// clear_purgatory(cfs_rq);
 
 	/*
 	 * Track task load average for carrying it to new CPU after migrated, and
@@ -4316,7 +4316,7 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 		se->vruntime += cfs_rq->min_vruntime;
 
 	update_curr(cfs_rq);
-	clear_purgatory(cfs_rq);
+	
 	/*
 	 * Otherwise, renormalise after, such that we're placed at the current
 	 * moment in time, instead of some random moment in the past. Being
@@ -4371,6 +4371,9 @@ void inline purgatory_remove(struct cfs_rq *cfs_rq, struct sched_entity *se,
 						u64 now)
 {
 		struct task_struct *task = task_of(se);
+
+		if (!task->purgatory.sleep_timestamp) return;
+		
 		raw_spin_lock(&task->purgatory.lock);
 		if (now - task->purgatory.sleep_timestamp <= sysctl_sched_purgatory_duration) {
 			raw_spin_unlock(&task->purgatory.lock);
@@ -5733,6 +5736,7 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 	int idle_h_nr_running = task_has_idle_policy(p);
 	int task_new = !(flags & ENQUEUE_WAKEUP);
 
+	clear_purgatory(&rq->cfs);
 	/*
 	 * The code below (indirectly) updates schedutil which looks at
 	 * the cfs_rq utilization to select a frequency.
@@ -7076,6 +7080,8 @@ select_task_rq_fair(struct task_struct *p, int prev_cpu, int wake_flags)
 
 	rcu_read_lock();
 	for_each_domain(cpu, tmp) {
+		clear_purgatory(&cpu_rq(prev_cpu)->cfs);
+
 		/*
 		 * If both 'cpu' and 'prev_cpu' are part of this domain,
 		 * cpu is a valid SD_WAKE_AFFINE target.
@@ -7175,6 +7181,9 @@ static void migrate_task_rq_fair(struct task_struct *p, int new_cpu)
 
 static void task_dead_fair(struct task_struct *p)
 {
+	if (p->purgatory.sleep_timestamp)
+		purgatory_remove(p->se.cfs_rq, &p->se, ktime_get_ns());
+
 	remove_entity_load_avg(&p->se);
 }
 
@@ -7183,7 +7192,7 @@ balance_fair(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 {
 	if (rq->nr_running)
 		return 1;
-	
+
 	return newidle_balance(rq, rf) != 0;
 }
 #endif /* CONFIG_SMP */
@@ -10911,7 +10920,7 @@ static int newidle_balance(struct rq *this_rq, struct rq_flags *rf)
 	struct sched_domain *sd;
 	int pulled_task = 0;
 	u64 curr_cost = 0;
-
+	clear_purgatory(&this_rq->cfs);
 	update_misfit_status(NULL, this_rq);
 
 	/*
