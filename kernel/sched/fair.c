@@ -4372,8 +4372,9 @@ void inline purgatory_remove(struct cfs_rq *cfs_rq, struct sched_entity *se,
 {
 		struct task_struct *task = task_of(se);
 
-		if (!task->purgatory.sleep_timestamp) return;
-		
+		if (!task->purgatory.sleep_timestamp)
+			return;
+
 		raw_spin_lock(&task->purgatory.lock);
 		if (now - task->purgatory.sleep_timestamp <= sysctl_sched_purgatory_duration) {
 			raw_spin_unlock(&task->purgatory.lock);
