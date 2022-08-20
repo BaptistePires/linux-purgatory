@@ -23,6 +23,7 @@
 
 #include "asm/current.h"
 #include "linux/compiler.h"
+#include "linux/compiler_types.h"
 #include "linux/export.h"
 #include "linux/irqflags.h"
 #include "linux/list.h"
@@ -109,7 +110,7 @@ static int __init setup_sched_thermal_decay_shift(char *str)
 }
 __setup("sched_thermal_decay_shift=", setup_sched_thermal_decay_shift);
 
-int clear_purgatory(struct cfs_rq*);
+inline int clear_purgatory(struct cfs_rq*);
 #ifdef CONFIG_SMP
 /*
  * For asym packing, by default the lower numbered CPU has higher priority.
@@ -3022,10 +3023,8 @@ account_entity_dequeue(struct cfs_rq *cfs_rq, struct sched_entity *se, int do_su
 	We can return right after because when called with do_sub_weight != 0,
 	it assumes it already have been called with do_sub_weight == 0.
 	*/
-	if (do_sub_weight) {
-		update_load_sub(&cfs_rq->load, se->load.weight);
-		return;
-	}
+	update_load_sub(&cfs_rq->load, se->load.weight);
+	
 #ifdef CONFIG_SMP
 	if (entity_is_task(se)) {
 		account_numa_dequeue(rq_of(cfs_rq), task_of(se));
@@ -3410,6 +3409,7 @@ void set_task_rq_fair(struct sched_entity *se,
 	u64 p_last_update_time;
 	u64 n_last_update_time;
 
+	clear_purgatory(prev);
 	if (!sched_feat(ATTACH_AGE_LOAD))
 		return;
 
@@ -3873,7 +3873,7 @@ static inline void update_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *s
 	u64 now = cfs_rq_clock_pelt(cfs_rq);
 	int decayed;
 
-	// clear_purgatory(cfs_rq);
+	clear_purgatory(cfs_rq);
 
 	/*
 	 * Track task load average for carrying it to new CPU after migrated, and
@@ -4372,7 +4372,7 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 /*
 	This function remove a sched_entity from the purgatory.
 */
-void inline purgatory_remove(struct cfs_rq *cfs_rq, struct sched_entity *se,
+inline void purgatory_remove(struct cfs_rq *cfs_rq, struct sched_entity *se,
 						u64 now)
 {
 		struct task_struct *task = task_of(se);
@@ -4390,19 +4390,20 @@ void inline purgatory_remove(struct cfs_rq *cfs_rq, struct sched_entity *se,
 		task->purgatory.sleep_timestamp = 0;
 		list_del(&task->purgatory.tasks);
 		raw_spin_unlock(&task->purgatory.lock);
+		update_load_sub(&cfs_rq->load, se->load.weight);
 
 		update_load_avg(cfs_rq, &task->se, UPDATE_TG);
-		account_entity_dequeue(cfs_rq, se, 1);
+		// account_entity_dequeue(cfs_rq, se, 1);
 		put_task_struct(task);
 }
 
-int clear_purgatory(struct cfs_rq *cfs_rq)
+ inline int clear_purgatory(struct cfs_rq *cfs_rq)
 {
 	u64 now;
 	u64 out;
 	struct task_struct *ite, *tmp;
 
-	if (!purgatory_on || !cfs_rq->purgatory.nr) return 0;
+	if (!purgatory_on || !cfs_rq || !cfs_rq->purgatory.nr) return 0;
 
 	now = ktime_get_ns();
 	out = 0;
@@ -4436,6 +4437,8 @@ int purgatory_add(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 		dequeued->purgatory.sleep_timestamp = ktime_get_ns();
 		raw_spin_lock(&cfs_rq->purgatory.lock);
 		list_add_tail(&dequeued->purgatory.tasks, &cfs_rq->purgatory.tasks);
+
+		update_load_add(&cfs_rq->load, se->load.weight);
 		cfs_rq->purgatory.nr++;
 		raw_spin_unlock(&cfs_rq->purgatory.lock);
 		raw_spin_unlock(&dequeued->purgatory.lock);
@@ -7140,7 +7143,7 @@ static void migrate_task_rq_fair(struct task_struct *p, int new_cpu)
 		u64 min_vruntime;
 
 		// TODO : Check if rly useful ?
-		clear_purgatory(cfs_rq);
+		// clear_purgatory(cfs_rq);
 #ifndef CONFIG_64BIT
 		u64 min_vruntime_copy;
 
@@ -7187,8 +7190,9 @@ static void migrate_task_rq_fair(struct task_struct *p, int new_cpu)
 
 static void task_dead_fair(struct task_struct *p)
 {
+	// make sure its kicked out from the purgatory
 	if (p->purgatory.sleep_timestamp)
-		purgatory_remove(p->se.cfs_rq, &p->se, ktime_get_ns());
+		purgatory_remove(p->se.cfs_rq, &p->se, p->purgatory.sleep_timestamp + sysctl_sched_purgatory_duration * 2);
 
 	remove_entity_load_avg(&p->se);
 }
@@ -7421,6 +7425,7 @@ pick_next_task_fair(struct rq *rq, struct task_struct *prev, struct rq_flags *rf
 	struct task_struct *p;
 	int new_tasks;
 
+	clear_purgatory(cfs_rq);
 again:
 	if (!sched_fair_runnable(rq))
 		goto idle;
@@ -11369,6 +11374,7 @@ static void detach_entity_cfs_rq(struct sched_entity *se)
 	struct cfs_rq *cfs_rq = cfs_rq_of(se);
 
 	/* Catch up with the cfs_rq and remove our load when we leave */
+	// clear_purgatory(cfs_rq)
 	update_load_avg(cfs_rq, se, 0);
 	detach_entity_load_avg(cfs_rq, se);
 	update_tg_load_avg(cfs_rq);
@@ -11805,26 +11811,26 @@ static unsigned int get_rr_interval_fair(struct rq *rq, struct task_struct *task
 DEFINE_SCHED_CLASS(fair) = {
 
 	.enqueue_task		= enqueue_task_fair,
-	.dequeue_task		= dequeue_task_fair,
+	.dequeue_task		= dequeue_task_fair, // clear_purgatory
 	.yield_task		= yield_task_fair,
 	.yield_to_task		= yield_to_task_fair,
 
 	.check_preempt_curr	= check_preempt_wakeup,
 
-	.pick_next_task		= __pick_next_task_fair,
-	.put_prev_task		= put_prev_task_fair,
+	.pick_next_task		= __pick_next_task_fair, // clear_purgatyory
+	.put_prev_task		= put_prev_task_fair, 
 	.set_next_task          = set_next_task_fair,
 
 #ifdef CONFIG_SMP
-	.balance		= balance_fair,
+	.balance		= balance_fair, // clearz
 	.pick_task		= pick_task_fair,
-	.select_task_rq		= select_task_rq_fair,
-	.migrate_task_rq	= migrate_task_rq_fair,
+	.select_task_rq		= select_task_rq_fair, // clear for each sched_domain
+	.migrate_task_rq	= migrate_task_rq_fair, // Checl if usefull to clear there but it s called right after a task is mgirating so decision alrerady taken
 
 	.rq_online		= rq_online_fair,
 	.rq_offline		= rq_offline_fair,
 
-	.task_dead		= task_dead_fair,
+	.task_dead		= task_dead_fair, // if in purg, remove it
 	.set_cpus_allowed	= set_cpus_allowed_common,
 #endif
 
