@@ -3018,8 +3018,13 @@ account_entity_enqueue(struct cfs_rq *cfs_rq, struct sched_entity *se)
 static void
 account_entity_dequeue(struct cfs_rq *cfs_rq, struct sched_entity *se, int do_sub_weight)
 {
+	/*
+	We can return right after because when called with do_sub_weight != 0,
+	it assumes it already have been called with do_sub_weight == 0.
+	*/
 	if (do_sub_weight) {
 		update_load_sub(&cfs_rq->load, se->load.weight);
+		return;
 	}
 #ifdef CONFIG_SMP
 	if (entity_is_task(se)) {
