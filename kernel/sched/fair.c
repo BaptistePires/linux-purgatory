@@ -4438,7 +4438,7 @@ int purgatory_add(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 		raw_spin_lock(&cfs_rq->purgatory.lock);
 		list_add_tail(&dequeued->purgatory.tasks, &cfs_rq->purgatory.tasks);
 
-		update_load_add(&cfs_rq->load, se->load.weight);
+		// update_load_add(&cfs_rq->load, se->load.weight);
 		cfs_rq->purgatory.nr++;
 		raw_spin_unlock(&cfs_rq->purgatory.lock);
 		raw_spin_unlock(&dequeued->purgatory.lock);
@@ -4554,7 +4554,7 @@ dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 	se->on_rq = 0;
 
 	// nr_running is updated here
-	account_entity_dequeue(cfs_rq, se, !added_purgatory);
+	account_entity_dequeue(cfs_rq, se, 0);
 
 	/*
 	 * Normalize after update_curr(); which will also have moved
@@ -7425,7 +7425,6 @@ pick_next_task_fair(struct rq *rq, struct task_struct *prev, struct rq_flags *rf
 	struct task_struct *p;
 	int new_tasks;
 
-	clear_purgatory(cfs_rq);
 again:
 	if (!sched_fair_runnable(rq))
 		goto idle;
