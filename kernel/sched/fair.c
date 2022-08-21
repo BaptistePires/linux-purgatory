@@ -4438,7 +4438,7 @@ int purgatory_add(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 		raw_spin_lock(&cfs_rq->purgatory.lock);
 		list_add_tail(&dequeued->purgatory.tasks, &cfs_rq->purgatory.tasks);
 
-		// update_load_add(&cfs_rq->load, se->load.weight);
+		update_load_add(&cfs_rq->load, se->load.weight);
 		cfs_rq->purgatory.nr++;
 		raw_spin_unlock(&cfs_rq->purgatory.lock);
 		raw_spin_unlock(&dequeued->purgatory.lock);
